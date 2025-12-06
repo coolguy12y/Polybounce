@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Ball + Growing Polygon</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      background: #0f1220;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      color: #cfd7ff;
+      display: grid;
+      place-items: center;
+      height: 100vh;
+    }
+    canvas {
+      border: 1px solid #2a2f4f;
+      border-radius: 12px;
+      background: radial-gradient(1200px 800px at center, #121533 0%, #0f1220 60%, #0b0e17 100%);
+    }
+    .hud {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      padding: 8px 12px;
+      background: rgba(18,21,51,0.65);
+      border: 1px solid #2a2f4f;
+      border-radius: 8px;
+      backdrop-filter: blur(6px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+      font-size: 14px;
+    }
+    .hud b { color: #8fb3ff; }
+    .controls {
+      margin-top: 6px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    button {
+      all: unset;
+      padding: 6px 10px;
+      background: #1b2040;
+      border: 1px solid #2a2f4f;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { background: #23295a; }
+  </style>
+</head>
+<body>
+<canvas id="cnv" width="900" height="600"></canvas>
+<div class="hud">
+  <div><b>Sides:</b> <span id="sides">3</span></div>
+  <div><b>Speed:</b> <span id="speed">2.00</span></div>
+  <div class="controls">
+    <button id="reset">Reset</button>
+    <button id="pause">Pause</button>
+  </div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('cnv');
+  const ctx = canvas.getContext('2d');
+  const hudSides = document.getElementById('sides');
+  const hudSpeed = document.getElementById('speed');
+  const btnReset = document.getElementById('reset');
+  const btnPause = document.getElementById('pause');
+
+  const W = canvas.width;
+  const H = canvas.height;
+  const C = { x: W / 2, y: H / 2 };
+
+  let nSides = 3;
+  const maxSides = 500;
+  const ballRadius = 8;
+  const circumradius = 250;
+  const edgeWidth = 2.0;
+
+  let speed = 2.0;
+  const speedGain = 1.12;
+  const maxSpeed = 100;
+  let vel = randomUnitVector().map(c => c * speed);
+
+  let paused = false;
+  let lastTime = performance.now();
+
+  function randomUnitVector() {
+    const angle = Math.random() * 2 * Math.PI;
+    return [Math.cos(angle), Math.sin(angle)];
+  }
+
+  function buildPolygon(n, center, R) {
+    const verts = [];
+    const offset = -Math.PI / 2;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + offset;
+      verts.push({
+        x: center.x + R * Math.cos(a),
+        y: center.y + R * Math.sin(a)
+      });
+    }
+    return verts;
+  }
+
+  function dot(a, b) { return a.x * b.x + a.y * b.y; }
+  function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y }; }
+  function add(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }
+  function mul(a, s) { return { x: a.x * s, y: a.y * s }; }
+  function length(v) { return Math.hypot(v.x, v.y); }
+  function normalize(v) {
+    const L = length(v);
+    return L === 0 ? { x: 0, y: 0 } : { x: v.x / L, y: v.y / L };
+  }
+  function reflect(v, n) {
+    const d = dot(v, n);
+    return { x: v.x - 2 * d * n.x, y: v.y - 2 * d * n.y };
+  }
+
+  function pointSegmentInfo(P, A, B) {
+    const AB = sub(B, A);
+    const AP = sub(P, A);
+    const ABlen2 = dot(AB, AB);
+    let t = ABlen2 === 0 ? 0 : Math.max(0, Math.min(1, dot(AP, AB) / ABlen2));
+    const closest = add(A, mul(AB, t));
+    const diff = sub(P, closest);
+    const dist = length(diff);
+    const edgeDir = normalize(AB);
+    const normal = { x: -edgeDir.y, y: edgeDir.x };
+    return { distance: dist, normal, t, closest };
+  }
+
+  function resolveCollisions(ballPos, ballVel, verts) {
+    let collided = false;
+    for (let i = 0; i < verts.length; i++) {
+      const A = verts[i];
+      const B = verts[(i + 1) % verts.length];
+      const info = pointSegmentInfo(ballPos, A, B);
+      const towards = dot(ballVel, info.normal) < 0;
+      if (info.distance <= ballRadius + edgeWidth && towards) {
+        const penetration = ballRadius + edgeWidth - info.distance;
+        if (penetration > 0) {
+          const correction = mul(info.normal, penetration + 0.5);
+          ballPos.x += correction.x;
+          ballPos.y += correction.y;
+        }
+        const newVel = reflect(ballVel, info.normal);
+        ballVel.x = newVel.x;
+        ballVel.y = newVel.y;
+        collided = true;
+        break;
+      }
+    }
+    return collided;
+  }
+
+  function drawPolygon(verts) {
+    ctx.lineWidth = edgeWidth;
+    ctx.strokeStyle = '#7aa1ff';
+    ctx.fillStyle = 'rgba(122,161,255,0.06)';
+    ctx.beginPath();
+    ctx.moveTo(verts[0].x, verts[0].y);
+    for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i].x, verts[i].y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  function drawBall(P) {
+    ctx.beginPath();
+    ctx.arc(P.x, P.y, ballRadius, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffd66b';
+    ctx.strokeStyle = '#cfa54b';
+    ctx.lineWidth = 1.5;
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  function updateHUD() {
+    hudSides.textContent = nSides;
+    hudSpeed.textContent = speed.toFixed(2);
+  }
+
+  let polygon = buildPolygon(nSides, C, circumradius);
+  let ballPos = { x: C.x, y: C.y };
+
+  function reset() {
+    nSides = 3;
+    speed = 2.0;
+    vel = randomUnitVector().map(c => c * speed);
+    ballPos = { x: C.x, y: C.y };
+    polygon = buildPolygon(nSides, C, circumradius);
+    updateHUD();
+    paused = false;
+    btnPause.textContent = 'Pause';
+  }
+
+  function togglePause() {
+    paused = !paused;
+    btnPause.textContent = paused ? 'Resume' : 'Pause';
+  }
+
+  btnReset.addEventListener('click', reset);
+  btnPause.addEventListener('click', togglePause);
+
+  function step(dt) {
+    ballPos.x += vel[0] * dt;
+    ballPos.y += vel[1] * dt;
+
+    const velObj = { x: vel[0], y: vel[1] };
+    const collided = resolveCollisions(ballPos, velObj, polygon);
+
+    vel[0] = velObj.x;
+    vel[1] = velObj.y;
+
+    if (collided && nSides < maxSides) {
+      nSides++;
+      speed = Math.min(maxSpeed, speed * speedGain);
+      const vdir = normalize({
+        x: vel[0],
+        y: vel[1]
+      });
+      vel[0] = vdir.x * speed;
+      vel[1] = vdir.y * speed;
+      polygon = buildPolygon(nSides, C, circumradius);
+      updateHUD();
+    }
+  }
+
+  function loop(now) {
+    const dt = (now - lastTime) / 16.666; // normalize to ~60fps
+    lastTime = now;
+
+    if (!paused) {
+      step(dt);
+    }
+
+    ctx.clearRect(0, 0, W, H);
+    drawPolygon(polygon);
+    drawBall(ballPos);
+
+    requestAnimationFrame(loop);
+  }
+
+  updateHUD();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
